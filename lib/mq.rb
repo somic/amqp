@@ -16,6 +16,21 @@ class MQ
 
   # Raised whenever an illegal operation is attempted.
   class Error < StandardError; end
+
+  class ReturnedMessage
+    attr_reader :reply_code, :reply_text, :routing_key, :exchange
+    attr_reader :original_header, :original_body
+
+    def initialize(reason, header, body)
+      @reply_code = reason.reply_code
+      @reply_text = reason.reply_text
+      @routing_key = reason.routing_key
+      @exchange = reason.exchange
+      @original_header = header
+      @original_body = body
+    end
+  end
+
 end
 
 # The top-level class for building AMQP clients. This class contains several
@@ -167,8 +182,12 @@ class MQ
     when Frame::Body
       @body << frame.payload
       if @body.length >= @header.size
-        @header.properties.update(@method.arguments)
-        @consumer.receive @header, @body if @consumer
+        if @method.is_a? Protocol::Basic::Return
+          MQ.message_returned ReturnedMessage.new(@method, @header, @body)
+        else
+          @header.properties.update(@method.arguments)
+          @consumer.receive @header, @body if @consumer
+        end
         @body = @header = @consumer = @method = nil
       end
 
@@ -230,6 +249,11 @@ class MQ
           c.channels.delete @channel
           c.close if c.channels.empty?
         }
+
+      when Protocol::Basic::Return
+        @method = method
+        @header = nil
+        @body = ''
       end
     end
   end
@@ -729,6 +753,15 @@ class MQ
       @error_callback = blk
     else
       @error_callback.call(msg) if @error_callback and msg
+    end
+  end
+
+  # Define what to do when a message is returned with basic.return
+  def self.message_returned msg = nil, &blk
+    if blk
+      @basic_return_callback = blk
+    else
+      @basic_return_callback.call(msg) if @basic_return_callback and msg
     end
   end
 
